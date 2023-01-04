@@ -7,21 +7,22 @@ library(tsfknn) # for applying knn on univariate time-series
 library(sm) # for local regression and loess
 library(splines) # for splines
 library(gam)
-library(lubridate)
+library(lubridate) # for date data types
 library(tidyverse)
+library(ggplot2) # for plotting EDA
+library(dplyr) # for checking numerical columns
 
 
 # importing the datasets
-FDX_stock_prices = read.csv("FDX.csv")
-UPS_stock_prices = read.csv("UPS.csv")
+FDX_stock_prices = read.csv("../data/FDX.csv")
+UPS_stock_prices = read.csv("../data/UPS.csv")
 
 # converting date column to date data type
 FDX_stock_prices$Date <- ymd(FDX_stock_prices$Date)
 FDX_stock_prices$month <- month(FDX_stock_prices$Date)
 FDX_stock_prices$year <- year(FDX_stock_prices$Date)
 
-# converting years to integer 1=start year 
-FDX_stock_prices$year <- FDX_stock_prices$year - 1990
+
 
 # deriving binary variables from the data
 FDX_stock_prices$is_first_month <- FDX_stock_prices$month == 1
@@ -38,28 +39,67 @@ str(FDX_stock_prices)
 sum(is.na(FDX_stock_prices))
 sum(is.na(UPS_stock_prices))
 
-# taking close price of the day as output variable
-FDX_close_prices <- FDX_stock_prices$Close
-UDP_close_prices <- UPS_stock_prices$Close
-
-
 # plotting close, open and high prices of the stock over time
-tt <- 1:NROW(FDX_close_prices)
-tt1<- (NROW(FDX_close_prices) - NROW(UDP_close_prices) + 1):NROW(FDX_close_prices)
+tt <- 1:NROW(FDX_stock_prices)
+tt1<- (NROW(FDX_stock_prices) - NROW(UPS_stock_prices) + 1):NROW(FDX_stock_prices)
 
+# plot for showing the trend of the time series
 par(mfrow=c(1,1))
-plot(tt, FDX_close_prices, xlab="time", ylab="closing stock price", main="distribution of closing stock prices over time", col=1,type="l", xaxt="n")
+plot(tt, FDX_stock_prices$Close, xlab="time", ylab="closing stock price", main="distribution of closing stock prices over time", col=1,type="l", xaxt="n")
 lines(tt, FDX_stock_prices$Open,col=2)
-axis(1, at = seq(1,length(FDX_close_prices),by=12), labels=FDX_stock_prices$Date[seq(1,length(FDX_close_prices),by=12)])
+axis(1, at = seq(1,length(FDX_stock_prices$Close),by=48), labels=FDX_stock_prices$Date[seq(1,length(FDX_stock_prices$Close),by=48)])
+legend(1, 310, legend=c("Close prices", "open prices"),col=c("black", "red"), lty=c(1,1), cex=1)
 
-hist(FDX_stock_prices$Volume, main=NULL)
+# seasonal plot (fix the labels of years)
+# time series object of past 10 years
+FDX_close_prices_ts <- ts(FDX_stock_prices$Close[-c(1:264)], frequency=12, start=c(2013, 1))
+ggseasonplot(FDX_close_prices_ts, year.labels=TRUE, year.labels.left=TRUE) +
+ylab("dollars($)") +
+ggtitle("Seasonal plot: FedX close prices")
+
+# scatter plot of close prices and volume
+plot(log(FDX_stock_prices$Volume), FDX_stock_prices$Close, type="p", xlab="Volume", ylab="Close prices",main="Volume vs Close prices")
+
+
+# barchart for volumes of each month in an year
+# Create a new column that combines the month and year into a single factor
+FDX_stock_prices$month_year <- as.factor(paste(FDX_stock_prices$month, FDX_stock_prices$year, sep = "-"))
+
+# Create the bar chart
+FDX_stock_prices$log_volume <- log(FDX_stock_prices$Volume)
+
+ggplot(FDX_stock_prices[-c(1:264),], aes(x = month_year, y = log_volume, fill=month_year)) +
+  geom_col() +
+  labs(x = "Month-Year", y = "Volume")
+
+# correlogram
+Acf(FDX_stock_prices$Close)
+
+# converting years to integer 1=start year 
+FDX_stock_prices$year <- FDX_stock_prices$year - 1990
+
+# adding the variables by replacing true with one and false with zero
+FDX_stock_prices$is_first_month_num <- ifelse(FDX_stock_prices$is_first_month, 1, 0)
+FDX_stock_prices$is_last_month_num <- ifelse(FDX_stock_prices$is_last_month, 1, 0)
+FDX_stock_prices$is_winter_num <- ifelse(FDX_stock_prices$is_winter, 1, 0)
+FDX_stock_prices$is_spring_num <- ifelse(FDX_stock_prices$is_spring, 1, 0)
+FDX_stock_prices$is_summer_num <- ifelse(FDX_stock_prices$is_summer, 1, 0)
+FDX_stock_prices$is_fall_num <- ifelse(FDX_stock_prices$is_fall, 1, 0)
 
 # splitting the data into last year for testing and remaining for training
-train_split <- 1:(NROW(FDX_close_prices)-12)
-test_split <- NROW(FDX_close_prices)-12:NROW(FDX_close_prices)
+FDX_train <- FDX_stock_prices[1:372,]
+FDX_test <- FDX_stock_prices[373:385,]
 
-X_train <- FDX_close_prices[train_split]
-X_test <- FDX_close_prices[test_split]
+UPS_train <- UPS_stock_prices[1:372,]
+UPS_test <- UPS_stock_prices[373:385,]
+
+# taking close price of the day as output variable
+FDX_Xtrain <- select_if(FDX_train, is.numeric)
+UPS_Xtrain <- select_if(UPS_train, is.numeric)
+
+FDX_Xtest <- select_if(FDX_test, is.numeric)
+UPS_Xtest <- select_if(UPS_test, is.numeric)
+
 
 #plotting
 # col - color of the points
@@ -69,41 +109,90 @@ X_test <- FDX_close_prices[test_split]
 # lwd - line width
 # lty - line type(0 to 6)
 
+
+
 # models
 # Parametric ----
+
+# correlation plot 
+library(corrplot)
+corrplot(cor(FDX_Xtrain)) # no significant correlation between the predictors as well as on the output
+
+# removing unnecessary columns
+removed_columns <- c("Open", "High", "Low", "Adj.Close", "month", "year", "log_volume")
+FDX_Xtrain <- select(FDX_Xtrain, -one_of(removed_columns))
+
+FDX_Xtest <- select(FDX_Xtest, -one_of(removed_columns))
+
+# minmax scaling volume and close prices
+min_close <- min(FDX_Xtrain$Close)
+max_close <- max(FDX_Xtrain$Close)
+min_volume <- min(FDX_Xtrain$Volume)
+max_volume <- max(FDX_Xtrain$Volume)
+  
+FDX_Xtrain$Close <- (FDX_Xtrain$Close - min_close)/(max_close - min_close)
+FDX_Xtrain$Volume <- (FDX_Xtrain$Volume - min_volume)/(max_volume - min_volume)
+
+FDX_Xtest$Close <- (FDX_Xtest$Close - min_close)/(max_close - min_close)
+FDX_Xtest$Volume <- (FDX_Xtest$Volume - min_volume)/(max_volume - min_volume)
+
+# complete transformed dataset
+complete_data <- rbind(FDX_Xtrain, FDX_Xtest)
+
+
 ## 1) Linear Regression ----
 par(mfrow=c(1,1))
-Acf(FDX_close_prices) # we can see the uptrend present in the prices
+Acf(FDX_Xtrain$Close) # we can see the uptrend present in the prices
+
+# multiple linear regression 
+lm_multi <- lm(Close~., data = FDX_Xtrain)
+summary(lm_multi) # NA for is_fall_num is due to multi-collinearity problem and None of the derived variables affect the close prices
+
+# time series values
+tt_train <- 1:NROW(FDX_Xtrain)
+tt_test <- 373:385
 
 # linear model with trend
-lm <- lm(FDX_avgprice~tt)
+lm <- lm(FDX_Xtrain$Close~tt_train)
 summary(lm) # the prices are significantly dependent on time
 
 # plotting regression fit
-plot(tt, FDX_avgprice, type='l')
+plot(tt_train, FDX_Xtrain$Close, type='l')
 abline(lm,col=2)
 
 # durbin watson test for auto-correlation significance in residuals
-dwtest(lm) # DW is close to zer which means positive correlation
+dwtest(lm) # DW is close to zero which means positive correlation
 
 # residual analysis
 res <- residuals(lm)
 plot(res)
 lines(res, type='l', col=2)
 
-Acf(res) # until lag 16 there is a significant positive correlation
+Acf(res) # until lag 17 there is a significant positive correlation
 
 
-
-avgprices.ts <- ts(FDX_avgprice, frequency=12)
+# creating a time series object
+FDX_close_prices_ts <- ts(FDX_Xtrain$Close, frequency=12)
 
 # linear model with trens and seasonality
-lm_ts <- tslm(avgprices.ts~trend+season)
+lm_ts <- tslm(FDX_close_prices_ts~trend+season)
 summary(lm_ts) # no seasonal component is significant 
+
+# linear model with trend
+lm_ts_trend <- tslm(FDX_close_prices_ts~trend)
+
+# predictions for linear model
+pred <- forecast(lm_ts_trend, h=13)
+
+# plotting the predictions
+plot(tt_test, FDX_Xtest$Close, type="l", xlab="Date", ylab="FDX closing prices",main="LR predictions for test set", xaxt="n")
+axis(1, at = seq(373,385,by=1), labels=FDX_stock_prices$Date[seq(373,385,by=1)])
+lines(tt_test, pred$mean, col=2)
+legend(374, 0.55, legend=c("Actual values", "Predictions"),col=c("black", "red"), lty=c(1,1), cex=1)
 
 
 ## 2) Bass model ----
-bm_prices <- BM(FDX_avgprice, display=T)
+bm_prices <- BM(FDX_Xtrain$Close, display=T)
 summary(bm_prices) # significant estimates: we can see lower and upper bounds have same signs
 
 # residual analysis
@@ -113,10 +202,19 @@ lines(res_BM, type='l', col=2, lwd=2) # we can clearly see pattern in the residu
 
 acf(res_BM)
 
+# prediction
+pred_bm_prices <- predict(bm_prices, newx = c(1:385))
+pred_inst_prices <- make.instantaneous(pred_bm_prices)
+plot(complete_data$Close, type="b", xlab="Year", ylab="Closing price", pch=16, lty=3, xaxt="n", cex=0.6, main="BM predictions for test set")
+axis(1, at = seq(1,385,by=48), labels=FDX_stock_prices$Date[seq(1,385,by=48)])
+lines(pred_inst_prices, lwd=2, col=3)
+legend(2, 0.8, legend=c("Actual values", "Predictions"),col=c("black", "green"), pch=c(21,NA), pt.bg = c("black",NA),lty=c(NA,1), cex=1)
+
 
 ## 3) Generalized Bass Model ----
-GMBr1ps <- GBM(FDX_avgprice, shock = "rett", nshock = 1, prelimestimates = c(1.368896e+05, 1.139170e-04, 8.667839e-03, 280, 310, -0.1 ))
-summary(GMBr1ps) # all the 
+# single shock model
+GMBr1ps <- GBM(FDX_Xtrain$Close, shock = "rett", nshock = 1, prelimestimates = c(2.789169e+02, 1.139732e-04, 1.055485e-02, 280, 310, -0.1 ))
+summary(GMBr1ps)
 
 # residual analysis
 res_GBMr1ps <- residuals(GMBr1ps)
@@ -125,21 +223,46 @@ lines(res_GBMr1ps, type='l', col=2, lwd=2) # we can clearly see pattern in the r
 
 acf(res_GBMr1ps)
 
+# prediction
+pred_gbmr1_prices <- predict(GMBr1ps, newx = c(1:385))
+pred_gbmr1_inst_prices <- make.instantaneous(pred_gbmr1_prices)
+plot(complete_data$Close, type="b", xlab="Year", ylab="Closing price", pch=16, lty=3, xaxt="n", cex=0.6, main="BM predictions for test set")
+axis(1, at = seq(1,385,by=48), labels=FDX_stock_prices$Date[seq(1,385,by=48)])
+lines(pred_gbmr1_inst_prices, lwd=2, col=3)
+legend(2, 0.8, legend=c("Actual values", "Predictions"),col=c("black", "green"), pch=c(21,NA), pt.bg = c("black",NA),lty=c(NA,1), cex=1)
 
-# exponential shock (a1, b1 and c1 have different meaning compared with rectangular shock)
-GMBe1ps <- GBM(FDX_avgprice, shock = "exp", nshock = 1, prelimestimates = c(1.368896e+05, 1.139170e-04, 8.667839e-03, 280, -0.1, 0.3 ))
-summary(GMBe1ps)
+# two rectangular shocks
+GMBr2ps <- GBM(FDX_Xtrain$Close, shock = "rett", nshock = 2, prelimestimates = c(2.789169e+02, 1.139732e-04, 1.055485e-02, 280, 310, -0.1, 330, 350, -0.1))
+summary(GMBr2ps)
 
 # residual analysis
-res_GBMe1ps <- residuals(GMBe1ps)
+res_GBMr2ps <- residuals(GMBr2ps)
+plot(res_GBMr2ps)
+lines(res_GBMr2ps, type='l', col=2, lwd=2) # we can clearly see pattern in the residuals
+
+acf(res_GBMr2ps)
+
+# prediction
+pred_gbmr2_prices <- predict(GMBr2ps, newx = c(1:385))
+pred_gbmr2_inst_prices <- make.instantaneous(pred_gbmr2_prices)
+plot(complete_data$Close, type="b", xlab="Year", ylab="Closing price", pch=16, lty=3, xaxt="n", cex=0.6, main="BM predictions for test set")
+axis(1, at = seq(1,385,by=48), labels=FDX_stock_prices$Date[seq(1,385,by=48)])
+lines(pred_gbmr2_inst_prices, lwd=2, col=3)
+legend(2, 0.8, legend=c("Actual values", "Predictions"),col=c("black", "green"), pch=c(21,NA), pt.bg = c("black",NA),lty=c(NA,1), cex=1)
+
+# exponential shock (a1, b1 and c1 have different meaning compared with rectangular shock)
+GBMe1ps <- GBM(FDX_Xtrain$Close, shock = "exp", nshock = 1, prelimestimates = c(2.789169e+02, 1.139732e-04, 1.055485e-02, 200, -0.1, 0.3))
+summary(GBMe1ps) # not better than rect shocks that why no point of predictions
+
+# residual analysis
+res_GBMe1ps <- residuals(GBMe1ps)
 plot(res_GBMe1ps)
 lines(res_GBMe1ps, type='l', col=2, lwd=2) # we can clearly see pattern in the residuals
 
 acf(res_GBMe1ps)
 
-
 ## 4) GGM ----
-GGM_ps <- GGM(FDX_avgprice, prelimestimates = c(1.368896e+05, 0.001, 0.01, 1.139170e-04, 8.667839e-03))
+GGM_ps <- GGM(FDX_Xtrain$Close, prelimestimates = c(2.789169e+02, 0.001, 0.01, 1.139732e-04, 1.055485e-02))
 summary(GGM_ps)
 
 # residual analysis
@@ -158,55 +281,57 @@ ucrcdFEDUPS <- UCRCD(FDX_avgprice, UPS_avgprice)
 summary(ucrcdFEDUPS)
 
 ## 6) ARIMA ----
-first_diff <- diff(FDX_close_prices)
+first_diff <- diff(FDX_Xtrain$Close)
 acf(first_diff)
-acf(diff(FDX_close_prices, differences = 2))
+acf(diff(FDX_Xtrain$Close, differences = 2))
 
 # checking stationarity using ADF test or unit root test
+library(tseries)
+adf.test(first_diff) # stationary series
 
 # for checking first significant lag to pick p of AR
 pacf(first_diff)
 
-fit1 <- arima(FDX_close_prices, order=c(7,1,0))
+fit1 <- arima(FDX_Xtrain$Close, order=c(7,1,0))
 
 arima(FDX_close_prices, order=c(7,1,4))
 
 # Generate forecasts for the next 5 time steps
-forecasts <- predict(fit1, n.ahead = 20)
+forecasts <- predict(fit1, n.ahead = 13)
 
 
 print(forecasts$pred)
 
-plot(tt, FDX_close_prices, xlab="time", ylab="closing stock price", main="distribution of closing stock prices over time", col=1,type="l", xaxt="n")
+plot(tt, complete_data$Close, xlab="time", ylab="closing stock price", main="distribution of closing stock prices over time", col=1,type="l", xaxt="n")
 lines(forecasts$pred, col=2)
 
 
-auto.a <- auto.arima(FDX_close_prices)
+auto.a <- auto.arima(FDX_Xtrain$Close)
 auto.a
 
 autoplot(forecast(auto.a))
 checkresiduals(auto.a)
 
 ## 7) ARIMAX ----
-auto.a<- auto.arima(FDX_close_prices, xreg=ifelse(FDX_stock_prices$is_first_month,1,0)) 
+auto.a<- auto.arima(FDX_Xtrain$Close, xreg=FDX_Xtrain$Volume) 
 AIC(auto.a)
 
-auto.a<- auto.arima(FDX_close_prices, xreg=ifelse(FDX_stock_prices$is_last_month,1,0)) 
+auto.a<- auto.arima(FDX_Xtrain$Close, xreg=FDX_Xtrain$is_first_month_num) 
 AIC(auto.a)
 
-auto.a<- auto.arima(FDX_close_prices, xreg=ifelse(FDX_stock_prices$is_winter,1,0)) 
+auto.a<- auto.arima(FDX_Xtrain$Close, xreg=FDX_Xtrain$is_last_month_num) 
 AIC(auto.a)
 
-auto.a<- auto.arima(FDX_close_prices, xreg=ifelse(FDX_stock_prices$is_spring,1,0)) 
+auto.a<- auto.arima(FDX_Xtrain$Close, xreg=FDX_Xtrain$is_winter_num) 
 AIC(auto.a)
 
-auto.a<- auto.arima(FDX_close_prices, xreg=ifelse(FDX_stock_prices$is_summer,1,0)) 
+auto.a<- auto.arima(FDX_Xtrain$Close, xreg=FDX_Xtrain$is_spring_num) 
 AIC(auto.a)
 
-auto.a<- auto.arima(FDX_close_prices, xreg=ifelse(FDX_stock_prices$is_fall,1,0)) 
+auto.a<- auto.arima(FDX_Xtrain$Close, xreg=FDX_Xtrain$is_summer_num)
 AIC(auto.a)
 
-auto.av <- auto.arima(FDX_close_prices, xreg=FDX_stock_prices$Volume)
+auto.av <- auto.arima(FDX_Xtrain$Close, xreg=FDX_Xtrain$is_fall_num)
 AIC(auto.av)
 
 checkresiduals(auto.a)
@@ -214,15 +339,15 @@ checkresiduals(auto.a)
 ## 9) Exponential smoothing
 
 # simple smoothing - series with no trend or seasonality
-ses.prices <- ses(FDX_close_prices, alpha=0.2, h=20)
+ses.prices <- ses(FDX_Xtrain$Close, alpha=0.2, h=20)
 autoplot(ses.prices)
 summary(ses.prices)
 
-ses.prices <- ses(FDX_close_prices, alpha=0.5, h=20)
+ses.prices <- ses(FDX_Xtrain$Close, alpha=0.5, h=20)
 autoplot(ses.prices)
 summary(ses.prices)
 
-ses.prices <- ses(FDX_close_prices, alpha=0.8, h=20)
+ses.prices <- ses(FDX_Xtrain$Close, alpha=0.8, h=20)
 autoplot(ses.prices)
 summary(ses.prices)
 
@@ -239,15 +364,10 @@ ses.prices <- ses(first_diff, alpha=0.8, h=20)
 autoplot(ses.prices)
 summary(ses.prices)
 
-# create training and validation
-fedx.train <- window(FDX_close_prices,
-                     end = 373)
-fedx.test <- window(FDX_close_prices,
-                    start = 374)
 
 # removing trend from test set
-fdx.dif <- diff(fedx.train)
-fdx.dif.test <- diff(fedx.test)
+fdx.dif <- diff(FDX_Xtrain$Close)
+fdx.dif.test <- diff(FDX_Xtest$Close)
 
 # comparing our model
 alpha <- seq(.01, .99, by = .01)
@@ -274,22 +394,8 @@ ggplot(alpha.fit, aes(alpha, RMSE)) +
 
 # refit model with alpha = .75
 ses.fdx.opt <- ses(fdx.dif,
-                    alpha = .75,
+                    alpha = .01,
                     h = 50)
-
-# performance eval
-accuracy(ses.fdx.opt, fdx.dif.test)
-
-# plotting results
-p1 <- autoplot(ses.fdx.opt) +
-  theme(legend.position = "bottom")
-p2 <- autoplot(fdx.dif.test) +
-  autolayer(ses.fdx.opt, alpha = .5) +
-  ggtitle("Predicted vs. actuals for
-                 the test data set")
-
-gridExtra::grid.arrange(p1, p2,
-                        nrow = 1)
 
 
 # Non-parametric ----
@@ -298,7 +404,7 @@ gridExtra::grid.arrange(p1, p2,
 # h : the forecast horizon, that is, the number of future values to be predicted.
 # lags : an integer vector indicating the lagged values of the target used as features in the examples (for instance, 1:2 means that lagged values 1 and 2 should be used).
 # k : the number of nearest neighbors used by the KNN model.
-pred <- knn_forecasting(avgprices.ts, h = 10, lags = 1:2, k = 5, transform = "none")
+pred <- knn_forecasting(FDX_close_prices_ts, h = 10, lags = 1:2, k = 5, transform = "none")
 knn_examples(pred)
 
 pred$prediction
@@ -306,19 +412,16 @@ pred$prediction
 plot(pred)
 
 ## 2) local regression ----
-stock_volume <- FDX_stock_prices$Volume
-plot(stock_volume) # highest values are in the order of 10^8
-# minmax scaling volume and avgprices
-scaled_FDXavgprices <- (FDX_avgprice - min(FDX_avgprice))/(max(FDX_avgprice) - min(FDX_avgprice))
-scaled_FDXvolume <- (stock_volume - min(stock_volume))/(max(stock_volume) - min(stock_volume)) 
+stock_volume <- FDX_Xtrain$Volume
+plot(stock_volume) 
 
-plot(scaled_FDXavgprices, type="l")
-lines(scaled_FDXvolume, col=2)
+plot(FDX_Xtrain$Close, type="l")
+lines(stock_volume, col=2)
 
-plot(scaled_FDXvolume, scaled_FDXavgprices)
+plot(stock_volume, FDX_Xtrain$Close)
 
-x <- scaled_FDXvolume
-y <- scaled_FDXavgprices
+x <- stock_volume
+y <- FDX_Xtrain$Close
 
 sm.regression(x, y,   h = 0.3, add = T, ngrid=200, col=2, display="se")
 
