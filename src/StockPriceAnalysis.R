@@ -6,11 +6,12 @@ library(tidyr) # for filling missing values
 library(tsfknn) # for applying knn on univariate time-series
 library(sm) # for local regression and loess
 library(splines) # for splines
-library(gam)
+library(gam) # for generalized additive models
 library(lubridate) # for date data types
 library(tidyverse)
 library(ggplot2) # for plotting EDA
 library(dplyr) # for checking numerical columns
+library(gbm) # for boosting methods
 
 
 # importing the datasets
@@ -412,20 +413,23 @@ pred$prediction
 plot(pred)
 
 ## 2) local regression ----
-stock_volume <- FDX_Xtrain$Volume
-plot(stock_volume) 
 
-plot(FDX_Xtrain$Close, type="l")
-lines(stock_volume, col=2)
-
-plot(stock_volume, FDX_Xtrain$Close)
-
-x <- stock_volume
+x <- FDX_Xtrain$Volume
 y <- FDX_Xtrain$Close
 
-sm.regression(x, y,   h = 0.3, add = T, ngrid=200, col=2, display="se")
+plot(x, y)
+sm.regression(x, y,   h =0.2, add = T, col=1, ngrid=300) # add is to add intercept, ngrid is for optimization
+sm.regression(x, y,   h =0.5, add = T, col=2, ngrid=300) # h is to consider no of points for fitting
+sm.regression(x, y,   h =0.6, add = T, col=3, ngrid=300)
+sm.regression(x, y,   h =0.9, add = T, col=4, ngrid=300)
+
 
 # loess
+# Local regression is a type of nonparametric regression that is 
+# used to fit a smooth curve to a scatterplot of data. 
+# It is particularly useful for data that may have a nonlinear relationship or for data with a lot of noise.
+
+plot(x, y, xlab="Volume", ylab="Close price")
 lo1 <- loess.smooth(x,y) #default span= 0.75 where span decides points taken locally for fitting
 lines(lo1, col=2)
 
@@ -434,19 +438,21 @@ lines(lo2,col=3)
 
 lo3 <- loess.smooth(x,y,span=0.2)
 lines(lo3,col=4)
+
 ## 3) regression splines ----
 
+plot(x, y, xlab="Volume", ylab="Close price")
 #we select and identify the knots 'equispaced'
 xi<-seq(min(x), max(x), length=4)
 
-m1<-lm(y ~ bs(x, knots=xi[2:(length(xi)-1)], degree=3))
+m1<-lm(y ~ bs(x, knots=xi[2:(length(xi)-1)], degree=2))
 
 ###---- for graphical reasons select 200 points where to evaluate the model
 xxx<-seq(min(x),max(x),length=200)
 
 #Make predictions by using the 'xxx' points
 fit1<-predict(m1, data.frame(x=xxx))
-#########
+
 plot(x,y,xlab="engine size", ylab="distance")
 lines(xxx,fit1,col=2)
 
@@ -478,7 +484,7 @@ s1 <- smooth.spline(x,y, lambda=0.0001)
 lines(s1, col=2)
 
 p1<- predict(s1, x=xxx)
-lines(p1, col=2)
+lines(p1, col=4)
 
 s2 <- smooth.spline(x,y, lambda=0.00001)
 p2<- predict(s2, x=xxx)
@@ -502,74 +508,387 @@ lines(p5, col=6)
 
 ## 5) Generative Additive Models ----
 
-str(FDX_stock_prices)
-#transform variable Date in format "data"
-FDX_stock_prices$Date <- as.Date(FDX_stock_prices$Date)
+#Show the linear effects 
+g1 <- gam(Close~tt_train+Volume, data=FDX_Xtrain)
+par(mfrow=c(1,2))
+plot(g1, se=T)
+summary(g1)
 
-#transform Date in numeric 
-FDX_stock_prices$Date <-as.numeric(FDX_stock_prices$Date)
-summary(FDX_stock_prices$Date)
 
-str(FDX_stock_prices)
+####GAM with splines performs better###
 
-# Set train and test
-set.seed(1)
-train = sample (1:nrow(FDX_stock_prices), 0.7*nrow(FDX_stock_prices))
-data.train=FDX_stock_prices[train ,]
-data.test=FDX_stock_prices[-train ,]
+# non-linear effect of smoothing basis on time and linear effect of volume
+g2 <- gam(Close~s(tt_train)+Volume, data=FDX_Xtrain)
+par(mfrow=c(1,2))
+plot(g2, se=T)
+summary(g2)
 
-data.train = data.train[,-c(3,4)]
-data.test=FDX_stock_prices[,-c(3,4)]
+# non-linear effect of both the smoothed parameters basis
+g3 <- gam(Close~s(tt_train)+s(Volume), data=FDX_Xtrain)
+par(mfrow=c(1,2))
+plot(g3, se=T)
+summary(g3)
 
-m1 <- lm(avgprice~., data=data.train)
+# non-linear effect of both the loess parameters basis
+g4 <- gam(Close~lo(tt_train)+lo(Volume), data=FDX_Xtrain)
+par(mfrow=c(1,2))
+plot(g4, se=T)
+summary(g4)
+
+# linear effect of all the predictors
+g5 <- gam(Close~tt_train+., data=FDX_Xtrain)
+par(mfrow=c(1,8))
+plot(g5, se=T)
+summary(g5)
+
+#######perform analysis of residuals
+par(mfrow=c(1,1))
+tsdisplay(residuals(g1))
+aar1<- auto.arima(residuals(g1))
+
+plot(FDX_Xtrain$Close, type="l")
+lines(fitted(aar1)+ fitted(g1), col=4)
+summary(aar1)
+
+# predictions
+for1 <- forecast(aar1)
+plot(for1)
+
+
+## 6) Gradient Boosting ----
+
+summary(FDX_Xtrain)
+
+# making binary variables to factors
+FDX_Xtrain[,c(3:8)]= lapply(FDX_Xtrain[,c(3:8)],factor)
+FDX_Xtest[,c(3:8)]= lapply(FDX_Xtest[,c(3:8)],factor)
+
+str(FDX_Xtrain)
+
+# 1 Boosting
+boost.movies=gbm(Close~., data=FDX_Xtrain, 
+                 distribution="gaussian", n.trees=5000, interaction.depth=1)
+boost.movies
+#
+#for the plot
+par(mfrow=c(1,1))
+#
+#plot of training error
+plot(boost.movies$train.error, type="l", ylab="training error")
+
+#always decreasing with increasing number of trees
+#
+#
+#relative influence plot
+summary(boost.movies) 
+#let us modify the graphical parameters to obtain a better plot
+#
+#more space on the left
+#
+# default vector of parameters
+mai.old<-par()$mai
+mai.old
+#new vector
+mai.new<-mai.old
+#new space on the left
+mai.new[2] <- 2.5 
+mai.new
+#modify graphical parameters
+par(mai=mai.new)
+summary(boost.movies, las=1) 
+#las=1 horizontal names on y
+summary(boost.movies, las=1, cBar=7) 
+#cBar defines how many variables
+#back to orginal window
+par(mai=mai.old)
+
+
+
+# test set prediction for every tree (1:5000)
+yhat.boost=predict(boost.movies, newdata=FDX_Xtest, n.trees=1:5000)
+
+# calculate the error for each iteration
+#use 'apply' to perform a 'cycle for' 
+# the first element is the matrix we want to use, 2 means 'by column', 
+#and the third element indicates the function we want to calculate
+
+err = apply(yhat.boost, 2, function(pred) mean((FDX_Xtest$Close - pred)^2))
+#
+plot(err, type="l")
+
+# error comparison (train e test)
+plot(boost.movies$train.error, type="l", ylim = c(0,0.2))
+lines(err, type="l", col=2)
+
+#minimum error in test set
+best=which.min(err)
+abline(v=best, lty=2, col=4)
+#
+min(err) #minimum error
+
+
+# 2 Boosting - Deeper trees
+boost.movies=gbm(Close~., data=FDX_Xtrain, 
+                 distribution="gaussian", n.trees=5000, interaction.depth=4)
+
+plot(boost.movies$train.error, type="l")
+
+#par(mai=mai.new)
+
+summary(boost.movies, las=1, cBar=7)  
+
+#par(mai=mai.old)
+
+yhat.boost=predict(boost.movies ,newdata=FDX_Xtest,n.trees=1:5000)
+err = apply(yhat.boost,2,function(pred) mean((FDX_Xtest$Close-pred)^2))
+plot(err, type="l")
+
+
+plot(boost.movies$train.error, type="l", ylim = c(0,0.2))
+lines(err, type="l", col=2)
+best=which.min(err)
+abline(v=best, lty=2, col=4)
+min(err)
+
+
+# 3 Boosting - Smaller learning rate 
+
+boost.movies=gbm(Close~., data=FDX_Xtrain, 
+                 distribution="gaussian", n.trees=5000, interaction.depth=1, shrinkage=0.01)
+plot(boost.movies$train.error, type="l")
+
+par(mai=mai.new)
+
+summary(boost.movies, las=1, cBar=7) 
+par(mai=mai.old)
+
+yhat.boost=predict(boost.movies ,newdata=FDX_Xtest,n.trees=1:5000)
+err = apply(yhat.boost,2,function(pred) mean((FDX_Xtest$Close-pred)^2))
+plot(err, type="l")
+
+
+plot(boost.movies$train.error, type="l", ylim=c(0, 0.2))
+lines(err, type="l", col=2)
+best=which.min(err)
+abline(v=best, lty=2, col=4)
+min(err)
+
+
+# 4 Boosting - combination of previous models
+boost.movies=gbm(Close~., data=FDX_Xtrain, 
+                 distribution="gaussian",n.trees=5000, interaction.depth=4, shrinkage=0.01)
+
+plot(boost.movies$train.error, type="l")
+#
+
+par(mai=mai.new)
+
+summary(boost.movies, las=1, cBar=7) 
+
+par(mai=mai.old)
+
+yhat.boost=predict(boost.movies ,newdata=FDX_Xtest,n.trees=1:5000)
+err = apply(yhat.boost, 2, function(pred) mean((FDX_Xtest$Close-pred)^2))
+plot(err, type="l")
+
+
+plot(boost.movies$train.error, type="l", ylim=c(0,0.2))
+lines(err, type="l", col=2)
+best=which.min(err)
+abline(v=best, lty=2, col=4)
+err.boost= min(err)
+
+
+##Comparison of models in terms of residual deviance
+predictions <- predict.gbm(boost.movies, newdata = FDX_Xtest)
+dev.gbm<- (sum((predictions-FDX_Xtest$Close)^2))
+
+dev.gbm
+
+
+boost.movies
+# partial dependence plots
+plot(boost.movies, i.var=1, n.trees = best)
+plot(boost.movies, i.var=2, n.trees = best)
+plot(boost.movies, i.var=5, n.trees = best)
+plot(boost.movies, i.var=c(1,5), n.trees = best) #bivariate (library(viridis) may be necessary)
+#
+plot(boost.movies, i.var=3, n.trees = best) # categorical
+plot(boost.movies, i.var=6, n.trees = best)
+
+plot(boost.movies, i=23, n.trees = best)# categorical
+plot(boost.movies, i=17, n.trees = best) #no effect
+
+
+## 7) Stepwise Regression ----
+
+m1 <- lm(Close~., data=FDX_Xtrain)
 
 summary(m1)
 
 m2 <- step(m1, direction="both")
 summary(m2)
 
-# library(corrplot)
-# corrplot(cor(FDX_stock_prices))
+
 
 #Prediction
-p.lm <- predict(m2, newdata=data.test)
-dev.lm <- sum((p.lm-data.test$avgprice)^2)
+p.lm <- predict.lm(m2, newdata=FDX_Xtest)
+dev.lm <- sum((p.lm-FDX_Xtest$Close)^2)
 dev.lm
 
 AIC(m2)
 
-g3 <- gam(avgprice~., data=data.train)
+## 8) stepwise GAM ----
+g3 <- gam(Close~., data=FDX_Xtrain)
 
 #Show the linear effects 
-par(mfrow=c(1,5))
-plot(g3, se=T)
+par(mfrow=c(2,4))
+plot(g3, se=T) 
 
-g3 <- gam(avgprice~Date, data=data.train)
+#Perform stepwise selection using gam swscope
+#Values for df should be greater than 1, with df=1 implying a linear fit
 
-#Show the linear effects 
-par(mfrow=c(1,1))
-plot(g3, se=T)
-
-sc = gam.scope(data.train[,c(1,6)], response=2, arg=c("df=2","df=3","df=4")) # degrees of freedom for specifying polynomial degrees
+sc = gam.scope(FDX_Xtrain[,-1], response=1, arg=c("df=2","df=3","df=4")) # degrees of freedom for specifying polynomial degrees
 g4<- step.Gam(g3, scope=sc, trace=T) # it avoids vote_classes using the model that we specify
 summary(g4)
 
 AIC(g4)
 
-par(mfrow=c(1,2))
+par(mfrow=c(2,4))
 plot(g4, se=T)
 
-par(mfrow=c(1,1))
-plot(g4, se=T, ask=T)
+#Prediction
+
+# make some variables factor
+p.gam <- predict(g4,newdata=FDX_Xtest[,c(2,5,6,7,8)])     
+dev.gam <- sum((p.gam-FDX_Xtest$Close)^2)
+dev.gam
+
+# 9) LSTM ----
+library(keras)
+library(tensorflow)
+
+scale_factors <- c(mean(FDX_train$Close), sd(FDX_train$Close))
+
+scaled_train <- (FDX_train$Close - scale_factors[1]) / scale_factors[2]
+
+prediction <- 12
+lag <- prediction
+
+scaled_train <- as.matrix(scaled_train)
+
+# we lag the data 11 times and arrange that into columns
+x_train_data <- t(sapply(
+  1:(length(scaled_train) - lag - prediction + 1),
+  function(x) scaled_train[x:(x + lag - 1), 1]
+))
+
+# now we transform it into 3D form
+x_train_arr <- array(
+  data = as.numeric(unlist(x_train_data)),
+  dim = c(
+    nrow(x_train_data),
+    lag,
+    1
+  )
+)
+
+y_train_data <- t(sapply(
+  (1 + lag):(length(scaled_train) - prediction + 1),
+  function(x) scaled_train[x:(x + prediction - 1)]
+))
+
+y_train_arr <- array(
+  data = as.numeric(unlist(y_train_data)),
+  dim = c(
+    nrow(y_train_data),
+    prediction,
+    1
+  )
+)
+
+x_test <- FDX_Xtest$Close
+# scale the data with same scaling factors as for training
+x_test_scaled <- (x_test - scale_factors[1]) / scale_factors[2]
+
+# this time our array just has one sample, as we intend to perform one 12-months prediction
+x_pred_arr <- array(
+  data = x_test_scaled,
+  dim = c(
+    1,
+    lag,
+    1
+  )
+)
+
+lstm_model <- keras_model_sequential()
+
+lstm_model %>%
+  layer_lstm(units = 50, # size of the layer
+             batch_input_shape = c(1, 12, 1), # batch size, timesteps, features
+             return_sequences = TRUE,
+             stateful = TRUE) %>%
+  # fraction of the units to drop for the linear transformation of the inputs
+  layer_dropout(rate = 0.5) %>%
+  layer_lstm(units = 50,
+             return_sequences = TRUE,
+             stateful = TRUE) %>%
+  layer_dropout(rate = 0.5) %>%
+  time_distributed(keras::layer_dense(units = 1))
 
 
+lstm_model %>%
+  compile(loss = 'mae', optimizer = 'adam', metrics = 'accuracy')
 
-## 6) Gradient Boosting ----
+summary(lstm_model)
+
+lstm_model %>% fit(
+  x = x_train_arr,
+  y = y_train_arr,
+  batch_size = 1,
+  epochs = 20,
+  verbose = 0,
+  shuffle = FALSE
+)
+
+lstm_forecast <- lstm_model %>%
+  predict(x_pred_arr, batch_size = 1) %>%
+  .[, , 1]
+
+# we need to rescale the data to restore the original values
+lstm_forecast <- lstm_forecast * scale_factors[2] + scale_factors[1]
 
 
+fitted <- predict(lstm_model, x_train_arr, batch_size = 1) %>%
+  .[, , 1]
+
+if (dim(fitted)[2] > 1) {
+  fit <- c(fitted[, 1], fitted[dim(fitted)[1], 2:dim(fitted)[2]])
+} else {
+  fit <- fitted[, 1]
+}
+
+# additionally we need to rescale the data
+fitted <- fit * scale_factors[2] + scale_factors[1]
 
 
+# I specify first forecast values as not available
+fitted <- c(rep(NA, lag), fitted)
+
+lstm_forecast <- ts(lstm_forecast, start=c(2022,1), end=c(2022,12), frequency = 12)
+input_ts <- ts(FDX_train$Close, start=c(1991,1), end=c(2021,12), frequency = 12)
+
+forecast_list <- list(
+  model = NULL,
+  method = "LSTM",
+  mean = lstm_forecast,
+  x = input_ts,
+  fitted = fitted,
+  residuals = as.numeric(input_ts) - as.numeric(fitted)
+)
+
+class(forecast_list) <- "forecast"
 
 
-
+forecast::autoplot(forecast_list)
 
